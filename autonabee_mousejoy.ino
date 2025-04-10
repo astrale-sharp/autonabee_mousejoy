@@ -1,18 +1,7 @@
-/*
-  Copyright (c) 2014-2015 NicoHood
-  See the readme for credit to other people.
 
-  Gamepad example
-  Press a button and demonstrate Gamepad actions
 
-  You can also use Gamepad1,2,3 and 4 as single report.
-  This will use 1 endpoint for each gamepad.
 
-  See HID Project documentation for more infos
-  https://github.com/NicoHood/HID/wiki/Gamepad-API
-*/
 
-#include "HID-Project.h"
 
 const int pinButton = 2;
 int signals[] = {A2, A3, A4};
