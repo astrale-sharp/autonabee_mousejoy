@@ -18,6 +18,8 @@
 
 int all_signals_length = 4;
 int all_signals[] = { A2, A3, A4, A5 };
+int buttons_debounce[] = {0, 0, 0, 0}; // used to store the debounce timer
+const int debounce_delay = 100; // in milliseconds
 
 
 
@@ -156,7 +158,8 @@ void loop() {
   handle_serial_communication();
   
   for (int i = 0; i < button_lengths; i++) {
-    if (not digitalRead(button_signals[i]) and not button_pressed[i]) {
+    if (!digitalRead(button_signals[i]) and not button_pressed[i] and buttons_debounce[i] < millis()) {
+      buttons_debounce[i] = millis() + debounce_delay;
       button_pressed[i] = true;
       Mouse.press(buttons_id[i]);
       Serial.print("button press: ");
@@ -173,12 +176,15 @@ void loop() {
     }
   }
 
+
+  
   bool scroll_mode;
   for (int i = 0; i < switches_lengths; i++) {
-    if (!digitalRead(switches_signals[i])) {
-      switches_toggled[i] = !switches_toggled[i];
-      if (switches_signals[i] == SwitchShift) {
-        // todo do something with keyboard
+      if (!digitalRead(switches_signals[i]) && buttons_debounce[i + 2] < millis() ) { // i + 2 because buttons_debounce arrays starts with two other buttons
+        buttons_debounce[i + 2] = millis() + debounce_delay;
+        Serial.println("Make the switch!");
+        switches_toggled[i] = !switches_toggled[i]; // we toggle the value
+        
         if (switches_id[i] == SwitchScroll) {
           scroll_mode = switches_toggled[i];
           if (!switches_toggled[i]) {
@@ -205,30 +211,30 @@ void loop() {
           }
         }
       }
-      delay(50); // simple debouncing
   }
 
   float dx = -(analogRead(A1) - dx_ofs) ;
   float dy = -(analogRead(A0) - dy_ofs) ;
   if (abs(dx) <= deadzone ) {dx = 0.0;}
   if (abs(dy) <= deadzone ) {dy = 0.0;}
-
-  if (!switches_toggled[switch_scroll_idx])  {
+  //Serial.print("dx: ");
+  //Serial.println(analogRead(A0));
+  //Serial.print("dy: ");
+  //Serial.println(analogRead(A1));
+  if (scroll_mode)  {
     Mouse.move(
       signOf(dx) * log10(1 + abs(dx)/1024*9) * speed,
       signOf(dy) * log10(1+ abs(dy)/1024 * 9) * speed);
   }
-  else { // scroll
-    // todo replace with scroll constants.
-    if (dy > 0) { 
-      Mouse.move(0,0, -2);
+  else {
+    if (dy > 0) {
+      Mouse.move(0,0, -2.0);
     }
     else if (dy < 0) {
-      Mouse.move(0,0, 2);
+      Mouse.move(0,0, 2.0);
       }
       delay(100);
   }
-  delay(10);
 }
 
 int signOf(int i) {
