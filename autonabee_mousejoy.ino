@@ -3,10 +3,12 @@
 
 #define SwitchScroll 0
 #define SwitchShift 1
+
 #define DEFAULT_DEADZONE 50.0
 #define DEFAULT_SPEED 8.0
 #define DEFAULT_OFFSET 1024/2
 #define COMMAND_CALIBRATE "CommandCalibrate"
+// adresses of variables in the eeprom
 #define ADRESS_DX_OFS 0
 #define ADRESS_DY_OFS 2
 // expect SET SPEED ?
@@ -16,6 +18,8 @@
 
 int all_signals_length = 4;
 int all_signals[] = { A2, A3, A4, A5 };
+
+
 
 int button_lengths = 2;
 int button_signals[] = {A2, A3};
@@ -30,7 +34,8 @@ int switches_id[] = {
   SwitchScroll,
   SwitchShift
 };
-
+const int A_LED_SCROLL = 6;
+const int A_LED_SHIFT = 7;
 int dx_ofs = 0;
 int dy_ofs = 0;
 int deadzone = 0;
@@ -45,21 +50,25 @@ void load_values_from_EEPROM() {
 
 void setup() {
   load_values_from_EEPROM();
-  while (!Serial) {
-    print_tick("X offset", String(dx_ofs));
-    print_tick("Y offset", String(dy_ofs));
-    print_tick("Speed", String(speed));
-    print_tick("Deadzone", String(deadzone));
-  }
+  while (!Serial) {}
+  print_tick("X offset", String(dx_ofs));
+  print_tick("Y offset", String(dy_ofs));
+  print_tick("Speed", String(speed));
+  print_tick("Deadzone", String(deadzone));
+  
   // we init all the inputs.
   for (int i = 0; i < all_signals_length; i++) {
     pinMode(all_signals[i], INPUT_PULLUP); // pas besoin de resistances pour les switchs.
   }
+  pinMode(A_LED_SCROLL, OUTPUT);
+  pinMode(A_LED_SHIFT, OUTPUT);
+  
   Serial.begin(9600);
   Serial.println("Arduino joy mouse starts!");
 
-  // Sends a clean report to the host. This is important on any Arduino type.
+  // Sends a clean report to the host.
   Mouse.begin();
+  Keyboard.begin();
 }
 
 void print_tick(String name, String s) {
@@ -69,6 +78,7 @@ void print_tick(String name, String s) {
       Serial.println("'");
 }
 
+// Parses and handles commands.
 void handle_serial_communication() {
   while (Serial.available() > 0) {
     // todo expect set get calibrate
@@ -142,9 +152,7 @@ void handle_serial_communication() {
   }
 }
 
-
-void loop() {  
-  
+void loop() {
   handle_serial_communication();
   
   for (int i = 0; i < button_lengths; i++) {
@@ -165,14 +173,39 @@ void loop() {
     }
   }
 
+  bool scroll_mode;
   for (int i = 0; i < switches_lengths; i++) {
     if (!digitalRead(switches_signals[i])) {
       switches_toggled[i] = !switches_toggled[i];
       if (switches_signals[i] == SwitchShift) {
         // todo do something with keyboard
+        if (switches_id[i] == SwitchScroll) {
+          scroll_mode = switches_toggled[i];
+          if (!switches_toggled[i]) {
+            Keyboard.press(KEY_LEFT_SHIFT);
+            digitalWrite(A_LED_SCROLL, HIGH);
+            Serial.println("activate switch scroll");
+          }
+          else { 
+            Keyboard.release(KEY_LEFT_SHIFT);
+            digitalWrite(A_LED_SCROLL, LOW);
+            Serial.println("deactivate switch scroll");
+          }
+        }
+        else if (switches_id[i] == SwitchShift) {
+          if (switches_toggled[i]) {
+            Keyboard.press(KEY_LEFT_SHIFT);
+            digitalWrite(A_LED_SHIFT, HIGH);
+            Serial.println("activate switch shift");
+          }
+          else { 
+            Keyboard.release(KEY_LEFT_SHIFT);
+            digitalWrite(A_LED_SHIFT, LOW);
+            Serial.println("deactivate switch shift");
+          }
+        }
       }
       delay(50); // simple debouncing
-    }
   }
 
   float dx = -(analogRead(A1) - dx_ofs) ;
