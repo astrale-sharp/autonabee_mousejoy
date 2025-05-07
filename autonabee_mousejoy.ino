@@ -1,76 +1,93 @@
 #include "HID-Project.h"
 #include "EEPROM.h"
 
-#define SwitchScroll 0
-#define SwitchShift 1
+/*
+Script to use with an arduino micro, hooked to 4 switches and a joystick.
 
-#define DEFAULT_DEADZONE 50.0
-#define DEFAULT_SPEED 8.0
-#define DEFAULT_OFFSET 1024/2
-#define COMMAND_CALIBRATE "CommandCalibrate"
-// adresses of variables in the eeprom
-#define ADRESS_DX_OFS 0
-#define ADRESS_DY_OFS 2
-// expect SET SPEED ?
-#define ADRESS_SPEED  4
-// expect SET DEADZONE ?
-#define ADRESS_DEADZONE 6
+the goal is to emulate a mouse, two buttons will behave as left and right mouse clicks,
+two buttons will toggle shift mode (left key pressed) or scroll mode (moving the joystick will scroll instead of moving the mouse).
 
-int all_signals_length = 4;
-int all_signals[] = { A2, A3, A4, A5 };
-int buttons_debounce[] = {0, 0, 0, 0}; // used to store the debounce timer
-const int debounce_delay = 100; // in milliseconds
+The behaviour can be customized by sending commands to the board via tty or with the helper python script (TODO).
+EXPECTED COMMANDS:
+- `CALIBRATE` to send while leaving the joystick untouched while the systems calibrate.
+- `DEFAULTS`
+- `HELP`
+- `SET <X> <Y>` where Y is an integer or a float and X must be one of
+  - int DEADZONE: a value between 0 and 512, all joystick input under this range will be ignored.
+  - int MOVEFLAG: 0 indicates to move the mouse using a linear scale, 1 in a logarithmic scale.
+  - float SPEED : used if MOVEMOD = 0, determines the speed of the mouse. SPEED * analog signal from joystick
+  - float LOGSPEED: used if MOVEMOD = 1, LOGSPEED * signOf(signal) * log10(1 + abs(signal)* LOGW)
+  - float LOGW: used if MOVEMOD = 1, see LOGSPEED
 
 
+EEPROM MEMORY
+0 int DX OFFSET
+2 int DY OFFSET
+4 int DEADZONE
+6 int MOVEFLAG
+8 float SPEED
+12 float LOGSPEED
+16 float LOGW
 
-int button_lengths = 2;
-int button_signals[] = {A2, A3};
-bool button_pressed[] = {false, false};
-int buttons_id[] = {MOUSE_LEFT, MOUSE_RIGHT};
+*/
 
-int switches_lengths = 2;
-int switch_scroll_idx = 0;
-int switches_signals[] = {A4, A5};
-bool switches_toggled[] = {false, false};
-int switches_id[] = {
-  SwitchScroll,
-  SwitchShift
-};
-const int A_LED_SCROLL = 6;
-const int A_LED_SHIFT = 7;
+#define CALIBRATE "CALIBRATE"
+const int ADR_DX_OFS = 0;
+const int ADR_DY_OFS = 2;
+const int ADR_DEADZONE = 4;
+const int ADR_MOVEFLAG = 6;
+const int ADR_SPEED = 8;
+const int ADR_LOGSPEED = 12;
+const int ADR_LOGW = 16;
+
+
+const int DEFAULT_OFFSET = 1024/2;
+const int DEFAULT_DEADZONE = 50;
+const int DEFAULT_MOVEFLAG = 0;
+const float DEFAULT_SPEED = 8.0;
+const float DEFAULT_LOGSPEED = 1.0;
+const float DEFAULT_LOGW = 1024*9;
+
 int dx_ofs = 0;
 int dy_ofs = 0;
 int deadzone = 0;
-int speed = 0;
+int moveflag = 0;
+float speed = 0;
+float logspeed = 0;
+float logw = 0;
+
 
 void load_values_from_EEPROM() {
-  dx_ofs = readIntFromEEPROM(ADRESS_DX_OFS);
-  dy_ofs = readIntFromEEPROM(ADRESS_DY_OFS);
-  speed = readIntFromEEPROM(ADRESS_SPEED);
-  deadzone = readIntFromEEPROM(ADRESS_DEADZONE);
+  EEPROM.get(ADR_DX_OFS, dx_ofs);
+  EEPROM.get(ADR_DY_OFS, dy_ofs);
+  EEPROM.get(ADR_DEADZONE, deadzone);
+  EEPROM.get(ADR_MOVEFLAG, moveflag);
+  EEPROM.get(ADR_SPEED, speed);
+  EEPROM.get(ADR_LOGSPEED, logspeed);
+  EEPROM.get(ADR_LOGW, logw);
+
 }
 
-void setup() {
+void write_defaults_to_EEPROM() {
+  EEPROM.put(ADR_DX_OFS, DEFAULT_OFFSET);
+  EEPROM.put(ADR_DY_OFS, DEFAULT_OFFSET);
+  EEPROM.put(ADR_DEADZONE, DEFAULT_DEADZONE);
+  EEPROM.put(ADR_MOVEFLAG, DEFAULT_MOVEFLAG);
+  EEPROM.put(ADR_SPEED, DEFAULT_SPEED);
+  EEPROM.put(ADR_LOGSPEED, DEFAULT_LOGSPEED);
+  EEPROM.put(ADR_LOGW, DEFAULT_LOGW);
   load_values_from_EEPROM();
-  while (!Serial) {}
-  print_tick("X offset", String(dx_ofs));
-  print_tick("Y offset", String(dy_ofs));
-  print_tick("Speed", String(speed));
-  print_tick("Deadzone", String(deadzone));
-  
-  // we init all the inputs.
-  for (int i = 0; i < all_signals_length; i++) {
-    pinMode(all_signals[i], INPUT_PULLUP); // pas besoin de resistances pour les switchs.
-  }
-  pinMode(A_LED_SCROLL, OUTPUT);
-  pinMode(A_LED_SHIFT, OUTPUT);
-  
-  Serial.begin(9600);
-  Serial.println("Arduino joy mouse starts!");
+  Serial.println("RESET TO DEFAULTS SETTINGS");
+}
 
-  // Sends a clean report to the host.
-  Mouse.begin();
-  Keyboard.begin();
+void calibrate() {
+  EEPROM.put(ADR_DX_OFS, analogRead(A1));
+  EEPROM.put(ADR_DY_OFS, analogRead(A0));
+
+  Serial.print("Calibrated with ");
+  Serial.print(analogRead(A1));
+  Serial.print("-");
+  Serial.println(analogRead(A0));
 }
 
 void print_tick(String name, String s) {
@@ -80,24 +97,41 @@ void print_tick(String name, String s) {
       Serial.println("'");
 }
 
+const int iter_size = 5;
+const int adr_iter[] = {
+  ADR_DEADZONE,
+  ADR_MOVEFLAG,
+  ADR_SPEED,
+  ADR_LOGSPEED,
+  ADR_LOGW,
+};
+
+const String commands_iter[] = {
+  "DEADZONE",
+  "MOVEFLAG",
+  "SPEED",
+  "LOGSPEED",
+  "LOGW",
+};
+
+const bool is_int_iter[] = {
+  true,
+  true,
+  false,
+  false,
+  false,
+};
+
 // Parses and handles commands.
 void handle_serial_communication() {
   while (Serial.available() > 0) {
-    // todo expect set get calibrate
     String command = Serial.readString();
-    Serial.print("received: ");
-    Serial.println(command);
     
-    if (command.indexOf(COMMAND_CALIBRATE) != -1) {
-        writeIntToEEPROM(ADRESS_DX_OFS, analogRead(A1));        
-        writeIntToEEPROM(ADRESS_DY_OFS, analogRead(A0));
-        Serial.print("Calibrated with ");
-        Serial.print(analogRead(A1));
-        Serial.print("-");
-        Serial.println(analogRead(A0));
+    if (command.indexOf(CALIBRATE) != -1) {
+        calibrate();
     }
     else if (command.indexOf("DEFAULTS") != -1) {
-      // todo back to defaults.
+      write_defaults_to_EEPROM();
     }
     else {
       int space = command.indexOf(" ");
@@ -107,7 +141,7 @@ void handle_serial_communication() {
       }
       String set_part = command.substring(0, space);
       String rest = command.substring(space + 1); // we skip the space itself
-      print_tick("first word", set_part);
+      //print_tick("first word", set_part);
       if (!set_part.equals("SET")) {
           Serial.print("EXPECTED SET, FOUND: ");
           Serial.println(set_part);
@@ -123,37 +157,113 @@ void handle_serial_communication() {
       
       String variable = rest.substring(0, space);
       String value = rest.substring(space + 1);
+      
       //print_tick("variable", variable);
       //print_tick("value", value);
 
-      int parsed_value = value.toInt();
-      if (parsed_value == 0) {
-        Serial.print("Invalid Value: ");
-        Serial.println(value);
-        Serial.println("Expected an integer > 0");
-        continue;
-      }
+      int int_value = value.toInt();
+      float float_value = value.toFloat();
       
-      if (variable.equals("SPEED")) {
-        writeIntToEEPROM(ADRESS_SPEED, parsed_value);
-        Serial.print("Set speed to ");
-        Serial.println(parsed_value);
-        load_values_from_EEPROM();
-        
+      if (int_value == 0) {
+        Serial.println("Value may be invalid: using 0.");
+//        Serial.println(value);
+//        Serial.println("Expected an integer > 0");
+//        continue;
+      } else if (float_value == 0.0) {
+        Serial.println("Value may be invalid: using 0.");
+//        Serial.println(value);
+//        Serial.println("Expected an float > 0");
+//        continue;
       }
-      else if (variable.equals("DEADZONE")) {
-        writeIntToEEPROM(ADRESS_DEADZONE, parsed_value);
-        Serial.print("Set deadzone to ");
-        Serial.println(parsed_value);
-        load_values_from_EEPROM();
+
+      bool matched = false;
+      for (int i = 0; i < iter_size; i++) {
+        int addr = adr_iter[i];
+        String command = commands_iter[i];
+        bool is_int = is_int_iter[i];
+        if (variable.equals(command)) {
+          Serial.print("Set ");
+          Serial.print(command);
+          Serial.print(" to ");
+
+          if (is_int) {
+            EEPROM.put(addr, int_value);
+            Serial.println(int_value);
+          }
+          else {
+            EEPROM.put(addr, float_value);
+            Serial.println(float_value);
+          }
+          matched = true;
+          load_values_from_EEPROM();
+          break;
+        }
       }
-      else {
-        print_tick("Expected SPEED or DEADZONE, received: ", value);
+      if (!matched) {
+        Serial.print("Expected ");
+        for (int i = 0; i < iter_size ;i++) {
+          if (i != 0) {Serial.print("or ");}
+          Serial.print(commands_iter[i]);
+        }
+        Serial.print("received: ");
+        Serial.println(variable);
       }
     }
   }
 }
 
+
+
+int all_signals_length = 4;
+int all_signals[] = { A2, A3, A4, A5 }; // used by the switches
+int buttons_debounce[] = {0, 0, 0, 0}; // used to store the debounce timer
+const int debounce_delay = 300; // in milliseconds
+
+int button_lengths = 2;
+int button_signals[] = {A2, A3};
+bool button_pressed[] = {false, false};
+int buttons_id[] = {MOUSE_LEFT, MOUSE_RIGHT};
+
+int switches_lengths = 2;
+int switch_scroll_idx = 0;
+int switches_signals[] = {A4, A5};
+bool switches_toggled[] = {false, false};
+
+#define SwitchScroll 0
+#define SwitchShift 1
+int switches_id[] = {
+  SwitchScroll,
+  SwitchShift
+};
+const int A_LED_SCROLL = 6;
+const int A_LED_SHIFT = 7;
+
+void setup() {
+  load_values_from_EEPROM();
+  while (!Serial) {}
+  print_tick("X offset", String(dx_ofs));
+  print_tick("Y offset", String(dy_ofs));
+  print_tick("Speed", String(speed));
+  print_tick("Deadzone", String(deadzone));
+  print_tick("MoveFlag", String(moveflag));
+
+  // we init all the inputs.
+  for (int i = 0; i < all_signals_length; i++) {
+    pinMode(all_signals[i], INPUT_PULLUP); // pas besoin de resistances pour les switchs.
+  }
+  pinMode(A_LED_SCROLL, OUTPUT);
+  pinMode(A_LED_SHIFT, OUTPUT);
+  
+  Serial.begin(9600);
+  Serial.println("Arduino joy mouse starts!");
+
+  // Sends a clean report to the host.
+  Mouse.begin();
+  Keyboard.begin();
+}
+
+int print_debounce = 0;
+int mouse_report_debounce = 0;
 void loop() {
   handle_serial_communication();
   
@@ -182,7 +292,6 @@ void loop() {
   for (int i = 0; i < switches_lengths; i++) {
       if (!digitalRead(switches_signals[i]) && buttons_debounce[i + 2] < millis() ) { // i + 2 because buttons_debounce arrays starts with two other buttons
         buttons_debounce[i + 2] = millis() + debounce_delay;
-        Serial.println("Make the switch!");
         switches_toggled[i] = !switches_toggled[i]; // we toggle the value
         
         if (switches_id[i] == SwitchScroll) {
@@ -217,44 +326,52 @@ void loop() {
   float dy = -(analogRead(A0) - dy_ofs) ;
   if (abs(dx) <= deadzone ) {dx = 0.0;}
   if (abs(dy) <= deadzone ) {dy = 0.0;}
-  //Serial.print("dx: ");
-  //Serial.println(analogRead(A0));
-  //Serial.print("dy: ");
-  //Serial.println(analogRead(A1));
-  if (scroll_mode)  {
-    Mouse.move(
-      signOf(dx) * log10(1 + abs(dx)/1024*9) * speed,
-      signOf(dy) * log10(1+ abs(dy)/1024 * 9) * speed);
+  
+  if (print_debounce < millis()) {
+    print_debounce = millis() + 2000;
+    Serial.print("dx: ");
+    Serial.print(analogRead(A0));
+    Serial.print(" -> ");
+    Serial.println(dx);
+    
+    Serial.print("dy: ");
+    Serial.print(analogRead(A1));
+    Serial.print(" -> ");
+    Serial.println(dy);
+    
   }
-  else {
-    if (dy > 0) {
-      Mouse.move(0,0, -2.0);
-    }
-    else if (dy < 0) {
-      Mouse.move(0,0, 2.0);
+
+//  if (mouse_report_debounce < millis()) {
+//    mouse_report_debounce = millis() + 20;
+
+    if (scroll_mode)  {
+      if (moveflag == 0) {
+        Mouse.move(
+          dx * speed,
+          dy * speed
+        );
+      }
+      else {
+        Mouse.move(
+          logspeed * signOf(dx) * log10(1 + abs(dx * logw)),
+          logspeed * signOf(dy) * log10(1+ abs(dy * logw))
+        );
       }
       delay(100);
-  }
+    }    
+    else {
+      if (dy > 0) {
+        Mouse.move(0,0, -2.0);
+      }
+      else if (dy < 0) {
+        Mouse.move(0,0, 2.0);
+        }
+        delay(100);
+    }
+  //}
 }
 
 int signOf(int i) {
   if (i < 0) { return -1; }
   return +1;
-}
-
-void writeIntToEEPROM(int address, int number)
-{ 
-  byte byte1 = number >> 8;
-  byte byte2 = number & 0xFF;
-  
-  EEPROM.write(address, byte1);
-  EEPROM.write(address + 1, byte2);
-}
-
-int readIntFromEEPROM(int address)
-{
-  byte byte1 = EEPROM.read(address);
-  byte byte2 = EEPROM.read(address + 1);
-
-  return (byte1 << 8) + byte2;
 }
